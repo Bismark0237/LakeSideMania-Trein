@@ -86,6 +86,8 @@ Dit document is opgesteld door het projectteam. Voor planning, ideeontwikkeling 
 De uiteindelijke keuzes, inhoud en uitwerking zijn door het team zelf ontwikkeld en verfijnd
 
 
+hier is onze domein model
+<img width="842" height="678" alt="image" src="https://github.com/user-attachments/assets/2723d491-6c1e-46a1-aea1-518931d517cc" />
 
 
 
