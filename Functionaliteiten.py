@@ -17,21 +17,31 @@ def set_motor_speeds(left_speed, right_speed):
     motor_left.write(left_speed)
     motor_right.write(right_speed)
 
-# Sensor uitlezen en actie bepalen
-sensoren = [sensor_L1, sensor_L2, sensor_M, sensor_R2, sensor_R1]
 
-# Start de iterator voor analoge uitlezing
+# Sensorenlijst
+sensoren = [sensor_L1, sensor_L2, sensor_M, sensor_R2, sensor_R1]
+# Lijst om actuele sensorwaarden op te slaan
+sensorwaarden = [None] * len(sensoren)
+
+# Callback-functie voor elke sensor
+def maak_callback(index):
+    def callback_waarde(value):
+        sensorwaarden[index] = value
+    return callback_waarde
+
+# Start de iterator en koppel de callbacks
 it = util.Iterator(board)
 it.start()
-for sensor in sensoren:
+for i, sensor in enumerate(sensoren):
+    sensor.register_callback(maak_callback(i))
     sensor.enable_reporting()
 
 # Wacht even zodat de eerste sensorwaarden binnenkomen
 time.sleep(1)
 
+# Gebruik de actuele waarden uit sensorwaarden
 def lees_sensors():
-    waarden = [sensor.read() for sensor in sensoren]
-    return waarden
+    return list(sensorwaarden)
 
 def bepaal_actie(waarden, drempel=0.5):
     # Print de ruwe sensorwaarden voor debuggen
@@ -66,14 +76,14 @@ if __name__ == "__main__":
 
 
 # Functies voor motorbesturing
-# def vooruit(snelheid=1.0):
-#     set_motor_speeds(snelheid, snelheid)
+def vooruit(snelheid=1.0):
+    set_motor_speeds(snelheid, snelheid)
 
-# def links(snelheid=1.0):
-#     set_motor_speeds(0, snelheid)
+def links(snelheid=1.0):
+    set_motor_speeds(0, snelheid)
 
-# def rechts(snelheid=1.0):
-#     set_motor_speeds(snelheid, 0)
+def rechts(snelheid=1.0):
+    set_motor_speeds(snelheid, 0)
 
-# def stop():
-#     set_motor_speeds(0, 0)
+def stop():
+    set_motor_speeds(0, 0)
