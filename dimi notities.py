@@ -7,7 +7,7 @@ import sys
 PORT = 'COM3'          # Pas aan indien nodig
 BASE_SPEED = 0.8
 SHARP_TURN = 0.8
-SMOOTH_TURN = 0.5
+SMOOTH_TURN = 0.3
 THRESHOLD = 0.5        # drempel voor zwart/wit
 
 # === HULP: pin-checker ===
@@ -90,12 +90,6 @@ class MotorController:
         self.richting_rechts.write(1)
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
-    
-    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar links
-        self.richting_links.write(0)
-        self.richting_rechts.write(1)
-        self.motor_links.write(speed)
-        self.motor_rechts.write(speed)
 
     def stop(self):
         self.motor_links.write(0)
@@ -113,13 +107,13 @@ class LineFollower:
         return pattern
 
     def navigate_turn(self, direction, sharpness):
-        """Bochtnavigatie met snelheidscompensatie."""
+        """Bochtnavigatie"""
         if direction == "left":
-            self.mc.set_speeds(BASE_SPEED * (1 - sharpness * 1.5),
+            self.mc.set_speeds(BASE_SPEED * (1 - sharpness),
                                BASE_SPEED * (1 + sharpness))
         elif direction == "right":
             self.mc.set_speeds(BASE_SPEED * (1 + sharpness),
-                               BASE_SPEED * (1 - sharpness * 1.5))
+                               BASE_SPEED * (1 - sharpness))
 
     def follow_line(self):
         L1, L2, M, R2, R1 = self.read_sensors()
@@ -133,23 +127,25 @@ class LineFollower:
             self.last_direction = "straight"
 
         # --- LINKS ---
-        elif pattern in ([1,0,0,0,0], [1,1,0,0,0], [1,1,1,0,0]):
-            print("Links scherp")
-            self.navigate_turn("left", SHARP_TURN)
-            self.last_direction = "left"
-        elif pattern in ([0,1,1,0,0], [0,1,0,0,0], [1,0,1,0,0]):
+        elif pattern in ([0,1,1,0,0], [1,1,0,0,0], [1,1,1,0,0], [1,0,0,0,0], [1,0,1,0,0]):
             print("Links bocht")
             self.navigate_turn("left", SMOOTH_TURN)
             self.last_direction = "left"
 
+        elif pattern in ([1,1,1,1,0], [1,1,0,1,0], [1,1,1,0,1]):
+            print("Links scherp")
+            self.navigate_turn("left", SHARP_TURN)
+            self.last_direction = "left"
+
         # --- RECHTS ---
-        elif pattern in ([0,0,0,0,1], [0,0,0,1,1], [0,0,1,1,1]):
-            print("Rechts scherp")
-            self.navigate_turn("right", SHARP_TURN)
-            self.last_direction = "right"
-        elif pattern in ([0,0,1,1,0], [0,0,0,1,0], [0,0,1,0,1]):
+        elif pattern in ([0,0,1,1,0], [0,0,0,1,1], [0,0,0,0,1], [0,1,0,0,1], [0,0,1,0,1]):
             print("Rechts bocht")
             self.navigate_turn("right", SMOOTH_TURN)
+            self.last_direction = "right"
+
+        elif pattern in ([0,1,1,1,1], [0,0,1,1,1], [1,0,1,1,1]):
+            print("Rechts scherp")
+            self.navigate_turn("right", SHARP_TURN)
             self.last_direction = "right"
 
         # --- KRUISPUNT ---
@@ -161,33 +157,18 @@ class LineFollower:
         # --- LIJN VERLOREN ---
         elif pattern == [0,0,0,0,0]:
             print("Lijn verloren!")
-            # Kort achteruit om van de witte zone af te komen
-            self.mc.backward(BASE_SPEED * 0.4)
-            time.sleep(0.25)
-            self.mc.stop()
-            self.mc.draaien(BASE_SPEED * 0.8)
-            time.sleep(0.3)
-            self.mc.stop()
-
-            # Herstelpoging op basis van laatste richting
+            self.mc.backward(BASE_SPEED * 0.6)
+            time.sleep(0.4)
             if self.last_direction == "left":
-                print("Herstel: zacht naar links draaien om lijn te zoeken")
-                self.navigate_turn("left", SMOOTH_TURN)
-                time.sleep(0.3)
+                print("Herstel naar links")
+                self.navigate_turn("left", SHARP_TURN)
             elif self.last_direction == "right":
-                print("Herstel: zacht naar rechts draaien om lijn te zoeken")
-                self.navigate_turn("right", SMOOTH_TURN)
-                time.sleep(0.3)
+                print("Herstel naar rechts")
+                self.navigate_turn("right", SHARP_TURN)
             else:
-                print("Geen richting bekend → langzaam rechtdoor zoeken")
-                self.mc.forward(BASE_SPEED * 0.4)
-                time.sleep(0.3)
-
-            # Na herstelpoging langzaam vooruit zoeken naar de lijn
-            print("Langzaam vooruit zoeken naar lijn...")
-            self.mc.forward(BASE_SPEED * 0.5)
-            time.sleep(0.3)
-            self.mc.stop()
+                print("Geen richting bekend → kort achteruit")
+                self.mc.backward(BASE_SPEED * 0.5)
+            time.sleep(0.4)
 
         # --- ONBEKENDE COMBINATIE ---
         else:
