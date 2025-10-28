@@ -91,7 +91,7 @@ class MotorController:
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
     
-    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar links
+    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar rechts
         self.richting_links.write(0)
         self.richting_rechts.write(1)
         self.motor_links.write(speed)
@@ -101,11 +101,11 @@ class MotorController:
         self.motor_links.write(0)
         self.motor_rechts.write(0)
 
-# === LIJNVOLGERSYSTEEM ===
+# Line Follower logica
 class LineFollower:
     def __init__(self, motor_ctrl):
         self.mc = motor_ctrl
-        self.last_direction = "straight"
+        self.last_direction = "straight"    
 
     def read_sensors(self):
         """Leest de waarden van de globale sensor_values en vertaalt ze naar 0/1."""

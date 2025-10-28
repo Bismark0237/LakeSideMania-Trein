@@ -3,26 +3,26 @@ import time
 import signal
 import sys
 
-# === CONFIGURATIE ===
+# Configuratie
 PORT = 'COM3'          # Pas aan indien nodig
 BASE_SPEED = 0.8
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit
 
-# === HULP: pin-checker ===
+# Pin checker
 def require_pin(pin, name):
     if pin is None:
         raise RuntimeError(f"Pin '{name}' kon niet worden geïnitialiseerd.")
     return pin
 
-# === ARDUINO VERBINDING ===
+# Arduino setup
 board = Arduino(PORT)
 it = util.Iterator(board)
 it.start()
 time.sleep(1)
 
-# === SENSORPINNEN (5-KANAALS LIJNSENSOR) ===
+# Sensoren
 sensor_values = [0.5, 0.5, 0.5, 0.5, 0.5]  # start met neutrale waardes
 
 def maak_callback(index):
@@ -46,7 +46,7 @@ for i, s in enumerate(raw_sensors):
 
 time.sleep(1)
 
-# === MOTORPINNEN ===
+# Motorpinnen
 motor_links = require_pin(board.get_pin('d:11:p'), "motor_links PWM D11")
 richting_links = require_pin(board.get_pin('d:13:o'), "richting_links D13")
 brake_links = require_pin(board.get_pin('d:8:o'), "brake_links D8")
@@ -57,7 +57,7 @@ brake_rechts = require_pin(board.get_pin('d:9:o'), "brake_rechts D9")
 
 time.sleep(1)
 
-# === MOTORCONTROLLER ===
+# Motor controller
 class MotorController:
     def __init__(self, motor_links, motor_rechts, richting_links, richting_rechts, brake_links, brake_rechts):
         self.motor_links = motor_links
@@ -91,7 +91,7 @@ class MotorController:
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
     
-    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar links
+    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar rechts
         self.richting_links.write(0)
         self.richting_rechts.write(1)
         self.motor_links.write(speed)
@@ -101,11 +101,11 @@ class MotorController:
         self.motor_links.write(0)
         self.motor_rechts.write(0)
 
-# === LIJNVOLGERSYSTEEM ===
+# Line Follower logica
 class LineFollower:
     def __init__(self, motor_ctrl):
         self.mc = motor_ctrl
-        self.last_direction = "straight"
+        self.last_direction = "straight"    
 
     def read_sensors(self):
         """Leest de waarden van de globale sensor_values en vertaalt ze naar 0/1."""
@@ -126,14 +126,14 @@ class LineFollower:
         pattern = [L1, L2, M, R2, R1]
         print(f"Sens: {pattern}")
 
-        # --- RECHTDOOR ---
+        # Rechtdoor
         if pattern in ([0,0,1,0,0], [0,1,1,1,0], [0,0,1,1,0], [0,1,1,0,0], [0,1,0,1,0]):
             print("Rechtdoor")
             self.mc.forward(BASE_SPEED)
             self.last_direction = "straight"
 
-        # --- LINKS ---
-        elif pattern in ([1,0,0,0,0], [1,1,0,0,0], [1,1,1,0,0]):
+        # Naar links
+        elif pattern in ([1,0,0,0,0], [1,1,0,0,0]):
             print("Links scherp")
             self.navigate_turn("left", SHARP_TURN)
             self.last_direction = "left"
@@ -142,8 +142,8 @@ class LineFollower:
             self.navigate_turn("left", SMOOTH_TURN)
             self.last_direction = "left"
 
-        # --- RECHTS ---
-        elif pattern in ([0,0,0,0,1], [0,0,0,1,1], [0,0,1,1,1]):
+        # Naar rechts
+        elif pattern in ([0,0,0,0,1], [0,0,0,1,1]):
             print("Rechts scherp")
             self.navigate_turn("right", SHARP_TURN)
             self.last_direction = "right"
@@ -152,13 +152,15 @@ class LineFollower:
             self.navigate_turn("right", SMOOTH_TURN)
             self.last_direction = "right"
 
-        # --- KRUISPUNT ---
-        elif pattern == [1,1,1,1,1]:
+        # Kruispunt
+        elif pattern in ([1,1,1,1,1], [1,1,1,0,0], [0,0,1,1,1]):
             print("Kruispunt gedetecteerd → rechtdoor")
+            self.mc.stop()
+            time.sleep(1)
             self.mc.forward(BASE_SPEED)
             self.last_direction = "straight"
 
-        # --- LIJN VERLOREN ---
+        # Lijn verloren
         elif pattern == [0,0,0,0,0]:
             print("Lijn verloren!")
             # Kort achteruit om van de witte zone af te komen
@@ -189,13 +191,13 @@ class LineFollower:
             time.sleep(0.3)
             self.mc.stop()
 
-        # --- ONBEKENDE COMBINATIE ---
+        # Onbekend patroon
         else:
             print("Onbekend patroon → langzaam rechtdoor")
             self.mc.set_speeds(BASE_SPEED * 0.7, BASE_SPEED * 0.7)
 
 
-# === INSTANTIES ===
+# Instanties
 motor_controller = MotorController(
     motor_links, motor_rechts,
     richting_links, richting_rechts,
@@ -203,7 +205,7 @@ motor_controller = MotorController(
 )
 lijnvolger = LineFollower(motor_controller)
 
-# === SIGNAL HANDLER ===
+# Signal handler voor nette exit
 def signal_handler(sig, frame):
     print("\nStoppen...")
     try:
@@ -214,7 +216,7 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-# === MAIN LOOP ===
+# Main Loop
 print("Start lijnvolgen... (Ctrl+C om te stoppen)")
 time.sleep(2)
 
