@@ -5,7 +5,7 @@ import sys
 
 # Configuratie
 PORT = 'COM3'          # Pas aan indien nodig
-BASE_SPEED = 0.8
+BASE_SPEED = 0.22
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit

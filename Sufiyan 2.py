@@ -3,27 +3,41 @@ import time
 import signal
 import sys
 
-# === CONFIGURATIE ===
+# =========================================
+# Configuratie
+# =========================================
 PORT = 'COM3'          # Pas aan indien nodig
-BASE_SPEED = 0.3
+BASE_SPEED = 0.8
+SHARP_TURN = 0.8
+SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit
-Kp = 0.4               # gevoeligheid voor bijsturen
-ALPHA = 0.3            # demping voor vloeiender motorreactie
 
-# === HULP: pin-checker ===
+# Routeplan (voorbeeld: Achtbaan)
+# Elke entry = actie bij het VOLGENDE kruispunt.
+# geldige acties: "rechtdoor", "links", "rechts", "halte"
+ROUTE_STEPS = ["rechtdoor", "rechtdoor", "rechtdoor", "links", "halte"]
+current_step_index = 0  # we beginnen bij stap 0
+
+
+# =========================================
+# Helpers
+# =========================================
 def require_pin(pin, name):
     if pin is None:
         raise RuntimeError(f"Pin '{name}' kon niet worden geïnitialiseerd.")
     return pin
 
-# === ARDUINO VERBINDING ===
+
+# =========================================
+# Arduino setup
+# =========================================
 board = Arduino(PORT)
 it = util.Iterator(board)
 it.start()
 time.sleep(1)
 
-# === SENSORPINNEN (5-KANAALS LIJNSENSOR) ===
-sensor_values = [0.5, 0.5, 0.5, 0.5, 0.5]  # neutraal starten
+# Sensoren (lijnsensoren)
+sensor_values = [0.5, 0.5, 0.5, 0.5, 0.5]  # start met neutrale waardes
 
 def maak_callback(index):
     def callback(data):
@@ -31,11 +45,11 @@ def maak_callback(index):
     return callback
 
 raw_sensors = [
-    board.get_pin('a:0:i'),
     board.get_pin('a:1:i'),
     board.get_pin('a:2:i'),
     board.get_pin('a:3:i'),
-    board.get_pin('a:4:i')
+    board.get_pin('a:4:i'),
+    board.get_pin('a:5:i')
 ]
 
 # Enable reporting + callbacks
@@ -46,7 +60,14 @@ for i, s in enumerate(raw_sensors):
 
 time.sleep(1)
 
-# === MOTORPINNEN ===
+# (optioneel / placeholder) Obstakel-sensor
+# Bijvoorbeeld ultrasoon of IR. Voor nu None -> je kunt later koppelen.
+obstacle_sensor = None   # board.get_pin('a:0:i') of iets dergelijks
+
+
+# =========================================
+# Motorpinnen
+# =========================================
 motor_links = require_pin(board.get_pin('d:11:p'), "motor_links PWM D11")
 richting_links = require_pin(board.get_pin('d:13:o'), "richting_links D13")
 brake_links = require_pin(board.get_pin('d:8:o'), "brake_links D8")
@@ -57,7 +78,10 @@ brake_rechts = require_pin(board.get_pin('d:9:o'), "brake_rechts D9")
 
 time.sleep(1)
 
-# === MOTORCONTROLLER ===
+
+# =========================================
+# Motor controller
+# =========================================
 class MotorController:
     def __init__(self, motor_links, motor_rechts, richting_links, richting_rechts, brake_links, brake_rechts):
         self.motor_links = motor_links
@@ -74,137 +98,109 @@ class MotorController:
         self.brake_rechts.write(0)
 
     def set_speeds(self, left, right):
-        # Remmen los
-        self.brake_links.write(0)
-        self.brake_rechts.write(0)
-
-        # Limiteer waarden
         left = max(0.0, min(1.0, float(left)))
         right = max(0.0, min(1.0, float(right)))
         self.motor_links.write(left)
         self.motor_rechts.write(right)
 
+    def forward(self, speed=BASE_SPEED):
+        self.richting_links.write(0)
+        self.richting_rechts.write(0)
+        self.motor_links.write(speed)
+        self.motor_rechts.write(speed)
+
+    def backward(self, speed=BASE_SPEED):
+        self.richting_links.write(1)
+        self.richting_rechts.write(1)
+        self.motor_links.write(speed)
+        self.motor_rechts.write(speed)
+    
+    def draaien_rechts(self, speed=BASE_SPEED * 0.8):
+        """draait op de plaats naar rechts"""
+        self.richting_links.write(0)
+        self.richting_rechts.write(1)
+        self.motor_links.write(speed)
+        self.motor_rechts.write(speed)
+
+    def draaien_links(self, speed=BASE_SPEED * 0.8):
+        """draait op de plaats naar links"""
+        self.richting_links.write(1)
+        self.richting_rechts.write(0)
+        self.motor_links.write(speed)
+        self.motor_rechts.write(speed)
+
     def stop(self):
         self.motor_links.write(0)
         self.motor_rechts.write(0)
-        # rem kort in
-        self.brake_links.write(1)
-        self.brake_rechts.write(1)
 
-# === LIJNVOLGERSYSTEEM ===
+
+# =========================================
+# Line Follower logica
+# =========================================
 class LineFollower:
     def __init__(self, motor_ctrl):
         self.mc = motor_ctrl
         self.last_direction = "straight"
-        self.prev_left = BASE_SPEED
-        self.prev_right = BASE_SPEED
 
     def read_sensors(self):
-        # Binariseer op basis van drempelwaarde
+        """Leest de waarden van de globale sensor_values en vertaalt ze naar 0/1."""
         pattern = [1 if v < THRESHOLD else 0 for v in sensor_values]
         return pattern
 
-    def navigate_pid(self):
+    def check_obstacle(self):
+        """Checkt of er een obstakel is.
+           TODO: later koppelen aan echte sensorwaarde.
+           Voor nu: altijd False zodat code wel runt.
         """
-        PID-achtige bijsturing met gewichten per sensor.
-        Dit maakt bochten vloeiender.
+        if obstacle_sensor is None:
+            return False
+        val = obstacle_sensor.read()
+        # Je zou hier drempel logica doen, bv val < 0.3 => obstakel dichtbij
+        return False
+
+    def navigate_turn(self, direction, sharpness):
+        """Bochtnavigatie met snelheidscompensatie."""
+        if direction == "left":
+            self.mc.set_speeds(BASE_SPEED * (1 - sharpness * 1.5),
+                               BASE_SPEED * (1 + sharpness))
+        elif direction == "right":
+            self.mc.set_speeds(BASE_SPEED * (1 + sharpness),
+                               BASE_SPEED * (1 - sharpness * 1.5))
+
+    def handle_intersection(self):
+        """Wordt aangeroepen zodra we een kruispunt zien.
+           Voert de juiste actie uit volgens ROUTE_STEPS[current_step_index].
         """
-        weights = [-2, -1, 0, 1, 2]
-        weighted_sum = 0
-        total_active = 0
-        for i, val in enumerate(sensor_values):
-            if val < THRESHOLD:
-                weighted_sum += weights[i]
-                total_active += 1
+        global current_step_index
 
-        if total_active == 0:
-            error = 0
-        else:
-            error = weighted_sum / total_active
-
-        correction = Kp * error
-        left_speed = BASE_SPEED - correction
-        right_speed = BASE_SPEED + correction
-
-        # Demping voor vloeiender resultaat
-        self.prev_left = (1 - ALPHA) * self.prev_left + ALPHA * left_speed
-        self.prev_right = (1 - ALPHA) * self.prev_right + ALPHA * right_speed
-
-        # Beperk snelheden
-        self.prev_left = max(0, min(1, self.prev_left))
-        self.prev_right = max(0, min(1, self.prev_right))
-
-        self.mc.set_speeds(self.prev_left, self.prev_right)
-
-        # Richting onthouden
-        if correction < -0.05:
-            self.last_direction = "left"
-        elif correction > 0.05:
-            self.last_direction = "right"
-        else:
-            self.last_direction = "straight"
-
-    def follow_line(self):
-        pattern = self.read_sensors()
-        print(f"Sens: {pattern}")
-
-        # === Kruispunt detectie ===
-        if all(pattern):
-            print("Kruispunt → rechtdoor")
-            self.mc.set_speeds(BASE_SPEED, BASE_SPEED)
-            self.last_direction = "straight"
-            return
-
-        # === Geen lijn gevonden → herstelstrategie ===
-        if pattern == [0, 0, 0, 0, 0]:
-            print("Lijn kwijt → zoeken...")
+        # Obstacle check heeft prioriteit (veiligheid > route)
+        if self.check_obstacle():
+            print("OBSTAKEL bij kruispunt -> STOP")
             self.mc.stop()
-            time.sleep(0.1)
-
-            if self.last_direction == "left":
-                # Draai iets naar links om lijn te zoeken
-                self.mc.set_speeds(0.2, 0.6)
-            elif self.last_direction == "right":
-                # Draai iets naar rechts
-                self.mc.set_speeds(0.6, 0.2)
-            else:
-                # Geen richting bekend → langzaam rechtdoor
-                self.mc.set_speeds(0.4, 0.4)
+            time.sleep(2)
             return
 
-        # === Normaal lijnvolgen ===
-        self.navigate_pid()
+        # Als er geen stappen meer zijn, beschouw dit als halte / routepunt
+        if current_step_index >= len(ROUTE_STEPS):
+            print("Geen verdere stappen -> halte / eindpunt")
+            self.mc.stop()
+            time.sleep(3)
+            return
 
-# === INSTANTIES ===
-motor_controller = MotorController(
-    motor_links, motor_rechts,
-    richting_links, richting_rechts,
-    brake_links, brake_rechts
-)
-lijnvolger = LineFollower(motor_controller)
+        actie = ROUTE_STEPS[current_step_index]
+        print(f"Kruispunt #{current_step_index} actie = {actie}")
 
-# === SIGNAL HANDLER ===
-def signal_handler(sig, frame):
-    print("\nStoppen...")
-    try:
-        motor_controller.stop()
-    finally:
-        board.exit()
-    sys.exit(0)
+        # eerst stoppen (passagiersmoment / nadenken)
+        self.mc.stop()
+        time.sleep(1)
 
-signal.signal(signal.SIGINT, signal_handler)
+        if actie == "rechtdoor":
+            print("→ Rechtdoor")
+            self.mc.forward(BASE_SPEED)
+            self.last_direction = "straight"
 
-# === MAIN LOOP ===
-print("Start lijnvolgen... (Ctrl+C om te stoppen)")
-time.sleep(2)
-
-try:
-    while True:
-        lijnvolger.follow_line()
-        time.sleep(0.05)
-except KeyboardInterrupt:
-    pass
-finally:
-    motor_controller.stop()
-    board.exit()
-    print("Programma gestopt.")
+        elif actie == "links":
+            print("→ Linksaf nemen")
+            # draai op de plaats naar links
+            self.mc.draaien_links(BASE_SPEED * 0.7)
+            time.sleep(0.4)  # finetunen op ec
