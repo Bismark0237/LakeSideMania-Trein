@@ -2,13 +2,21 @@ from pyfirmata2 import Arduino, util
 import time
 import signal
 import sys
+import logging
 
 # Configuratie
 PORT = 'COM3'          # Pas aan indien nodig
-BASE_SPEED = 0.2
+BASE_SPEED = 0.17
 SHARP_TURN = 0.8
-SMOOTH_TURN = 0.4
+SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit
+
+# PID controller parameters
+PID_KP = 0.2  # Proportional gain: response to current error strength
+PID_KI = 0.01  # Integral gain: error correction over time
+PID_KD = 0.2  # Derivative gain: dampening to reduce oscillation
+INTEGRAL_CAP = 5.0
+
 
 # Pin checker
 def require_pin(pin, name):
@@ -57,10 +65,6 @@ brake_rechts = require_pin(board.get_pin('d:9:o'), "brake_rechts D9")
 
 time.sleep(1)
 
-# Ultrasonic sensor setup (optioneel)
-echo_pin = require_pin(board.get_pin('d:6:o'), "ultrasonic trig D6")
-trig_pin = require_pin(board.get_pin('d:7:i'), "ultrasonic echo D7")
-
 # Motor controller
 class MotorController:
     def __init__(self, motor_links, motor_rechts, richting_links, richting_rechts, brake_links, brake_rechts):
@@ -95,21 +99,55 @@ class MotorController:
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
     
-    def draaien(self, speed=BASE_SPEED): # draait naar rechts
+    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar rechts
         self.richting_links.write(0)
         self.richting_rechts.write(1)
-        self.motor_links.write(speed)
-        self.motor_rechts.write(speed)
-    
-    def draaien_tegen(self, speed=BASE_SPEED): # draait naar links
-        self.richting_links.write(1)
-        self.richting_rechts.write(0)
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
 
     def stop(self):
         self.motor_links.write(0)
         self.motor_rechts.write(0)
+
+# PID Controller
+class PIDController:
+    """Handles PID calculations for line following"""
+    
+    def __init__(self):
+        self.last_error = 0
+        self.integral = 0
+        
+    def calculate(self, sensors):
+        """Calculate motor speeds using PID control"""
+        weights = [-2, -1, 0, 1, 2]
+        inverted_sensors = [1 - s for s in sensors]
+        
+        if sum(inverted_sensors) == 0:
+            error = self.last_error
+        else:
+            error = sum(w * s for w, s in zip(weights, inverted_sensors)) / sum(inverted_sensors)
+        
+        if abs(error) < 0.5:
+            self.integral += error
+            self.integral = max(-INTEGRAL_CAP, min(INTEGRAL_CAP, self.integral))
+        
+        derivative = error - self.last_error
+        self.last_error = error
+        
+        adjustment = (PID_KP * error +
+                      PID_KI * self.integral +
+                      PID_KD * derivative)
+        
+        logging.info(f"PID: error={error:.3f}, integral={self.integral:.3f}, derivative={derivative:.3f}")
+        
+        left_speed = BASE_SPEED + adjustment
+        right_speed = BASE_SPEED - adjustment
+        
+        min_speed = BASE_SPEED * 0.3
+        left_speed = max(min_speed, min(1.0, left_speed))
+        right_speed = max(min_speed, min(1.0, right_speed))
+        
+        return left_speed, right_speed
 
 # Line Follower logica
 class LineFollower:
@@ -125,87 +163,18 @@ class LineFollower:
     def navigate_turn(self, direction, sharpness):
         """Bochtnavigatie met snelheidscompensatie."""
         if direction == "left":
-            self.mc.set_speeds(BASE_SPEED * (1 - sharpness),
+            self.mc.set_speeds(BASE_SPEED * (1 - sharpness * 1.5),
                                BASE_SPEED * (1 + sharpness))
         elif direction == "right":
             self.mc.set_speeds(BASE_SPEED * (1 + sharpness),
-                               BASE_SPEED * (1 - sharpness))
-
+                               BASE_SPEED * (1 - sharpness * 1.5))
     def follow_line(self):
-        L1, L2, M, R2, R1 = self.read_sensors()
-        pattern = [L1, L2, M, R2, R1]
-        print(f"Sens: {pattern}")
+        """Volg de lijn met PID-regeling."""
+        sensors = sensor_values.copy()
+        pid = PIDController()
+        left_speed, right_speed = pid.calculate(sensors)
+        self.mc.set_speeds(left_speed, right_speed)
 
-        # Rechtdoor
-        if pattern in ([0,0,1,0,0], [0,1,1,1,0], [0,0,1,1,0], [0,1,1,0,0], [0,1,0,1,0]):
-            print("Rechtdoor")
-            self.mc.forward(BASE_SPEED)
-            self.last_direction = "straight"
-
-        # Naar links
-        elif pattern in ([1,0,0,0,0], [1,1,0,0,0]):
-            print("Links scherp")
-            self.navigate_turn("left", SHARP_TURN)
-            self.last_direction = "left"
-        elif pattern in ([0,1,1,0,0], [0,1,0,0,0]):
-            print("Links bocht")
-            self.navigate_turn("left", SMOOTH_TURN)
-            self.last_direction = "left"
-
-        # Naar rechts
-        elif pattern in ([0,0,0,0,1], [0,0,0,1,1]):
-            print("Rechts scherp")
-            self.navigate_turn("right", SHARP_TURN)
-            self.last_direction = "right"
-        elif pattern in ([0,0,1,1,0], [0,0,0,1,0]):
-            print("Rechts bocht")
-            self.navigate_turn("right", SMOOTH_TURN)
-            self.last_direction = "right"
-
-        # Kruispunt
-        elif pattern == [1,1,1,1,1]:
-            print("Kruispunt gedetecteerd → Links en Rechts mogelijk")
-            self.mc.stop()
-            time.sleep(1)
-            self.mc.forward(BASE_SPEED)
-            self.last_direction = "straight"
-        
-        elif pattern == [1,1,1,0,0]:
-            print("Kruispunt gedetecteerd → linker T-splitsing")
-            self.mc.stop()
-            time.sleep(1)
-            self.mc.forward(BASE_SPEED)
-            self.last_direction = "left"
-
-        elif pattern == [0,0,1,1,1]:
-            print("Kruispunt gedetecteerd → rechter T-splitsing")
-            self.mc.stop()
-            time.sleep(1)
-            self.mc.forward(BASE_SPEED)
-            self.last_direction = "right"
-
-        # Lijn verloren
-        elif pattern == [0,0,0,0,0]:
-            print("Lijn verloren!")
-            # Kort achteruit om van de witte zone af te komen
-            self.mc.backward(BASE_SPEED * 0.8)
-            time.sleep(0.3)
-            self.mc.stop()
-            self.mc.draaien(BASE_SPEED * 0.5)
-            time.sleep(0.5)
-            self.mc.stop()
-
-            # Na herstelpoging langzaam vooruit zoeken naar de lijn
-            print("Langzaam vooruit zoeken naar lijn...")
-            self.mc.forward(BASE_SPEED * 0.5)
-            time.sleep(0.3)
-            self.mc.stop()
-
-        # Onbekend patroon
-        else:
-            print("Onbekend patroon → langzaam rechtdoor")
-            self.mc.draaien(BASE_SPEED * 0.3)
-            time.sleep(0.5)
 
 
 # Instanties
