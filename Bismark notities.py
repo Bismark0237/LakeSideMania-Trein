@@ -19,7 +19,7 @@ INVERT_TURNS = False     # True als links/rechts fysiek gespiegeld is
 # ===================== ROUTEPLANNING =====================
 # Start bij Trein depot; pas aan als je baan anders loopt
 ROUTES = {
-    "depot-achtbaan":     {"plan": ["rechtdoor, rechtdoor, rechtdoor, rechtdoor, links, rechtdoor"],  "loc": "Trein depot"},
+    "depot-achtbaan":     {"plan": (["rechtdoor"], ["rechtdoor"], ["rechtdoor"], ["rechtdoor"], ["links"], ["rechtdoor"]),  "loc": "Trein depot"},
 }
 ROUTE_VOLGORDE = [
     "depot-achtbaan"
@@ -178,6 +178,7 @@ class LineFollower:
         if cross_left or cross_right or cross_all:
             next_dir = self.route_plan[self.route_step]  # 'links'/'rechts'/'rechtdoor'
             self.choose(next_dir)
+            print(f"Route stap {self.route_step+1}/{self.route_max}: {next_dir}")
             self.route_step += 1
             return True
         return False

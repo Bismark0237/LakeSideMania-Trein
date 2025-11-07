@@ -7,15 +7,15 @@ import sys
 PORT = 'COM3'          # Pas aan indien nodig
 
 # Aparte basis-snelheden per motor
-BASE_SPEED_LEFT = 0.27     # linker motor basis
-BASE_SPEED_RIGHT = 0.32    # rechter motor basis
+BASE_SPEED_LEFT = 0.18     # linker motor basis
+BASE_SPEED_RIGHT = 0.23    # rechter motor basis
 
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit
-CROSS_COOLDOWN  = 0.8    # s na bocht geen nieuwe kruispuntbeslissing
+CROSS_COOLDOWN = 0.5   # s na bocht geen nieuwe kruispuntbeslissing (verlaagd voor snellere detectie)
 ROUTES = {
-    "depot-achtbaan":     {"plan": (["straight"], ["straight"], ["straight"], ["straight"], ["left"], ["straight"]),  "loc": "Trein depot"},
+    "depot-achtbaan": {"plan": ["straight", "straight", "straight", "straight", "straight", "left", "straight"], "loc": "Trein depot"},
 }
 ROUTE_VOLGORDE = [
     "depot-achtbaan"
@@ -115,7 +115,7 @@ class MotorController:
         """Rechtsom draaien door left trager, rechts sneller."""
         self.richting_links.write(0)
         self.richting_rechts.write(0)
-        self.motor_links.write(0.4)
+        self.motor_links.write(0.2)
         self.motor_rechts.write(0)
 
     def draaien_tegen(self, scale=0.8):
@@ -123,7 +123,7 @@ class MotorController:
         self.richting_links.write(0)
         self.richting_rechts.write(0)
         self.motor_links.write(0)
-        self.motor_rechts.write(0.4)
+        self.motor_rechts.write(0.2)
 
     def stop(self):
         self.set_speeds(0, 0)
@@ -138,93 +138,99 @@ class LineFollower:
         self.route_index = 0
         self.route_key = ROUTE_VOLGORDE[self.route_index]
         self.route_plan = ROUTES[self.route_key]["plan"]
-        self.route_max  = len(self.route_plan)
+        self.route_max = len(self.route_plan)
         self.route_step = 0
-
+        self.last_turn_time = 0  # FIX: Initialiseer deze variabele
 
     def read_sensors(self):
         """Leest de waarden van de globale sensor_values en vertaalt ze naar 0/1."""
         pattern = [1 if v < THRESHOLD else 0 for v in sensor_values]
+        print(f"Sens: {pattern}")
         return pattern
 
-
     def handle_crossings(self):
+        """Check of we bij een kruispunt zijn en voer de geplande actie uit."""
         if self.route_step >= self.route_max:
             return False
         if time.time() - self.last_turn_time < CROSS_COOLDOWN:
             return False
 
-
-        if self.read_sensors() in ([1,1,1,0,0], [0,0,1,1,1], [1,1,1,1,1]):
-            next_dir = self.route_plan[self.route_step]  # 'left'/'rechts'/'straight'
+        L1, L2, M, R2, R1 = self.read_sensors()
+        
+        # Detecteer T-kruispunt: buitenste sensoren (L1 of R1) actief + middelste sensoren
+        # Dit onderscheidt kruispunten van normale bochten
+        is_left_junction = L1 == 1 and (L2 == 1 or M == 1)
+        is_right_junction = R1 == 1 and (R2 == 1 or M == 1)
+        is_cross = L1 == 1 and R1 == 1  # volledige kruising
+        
+        if is_left_junction or is_right_junction or is_cross:
+            pattern = [L1, L2, M, R2, R1]
+            next_dir = self.route_plan[self.route_step]
+            print(f"\nKRUISPUNT GEDETECTEERD (sensoren: {pattern}) - Route stap {self.route_step+1}/{self.route_max}: {next_dir}")
             self.choose(next_dir)
-            print(f"Route stap {self.route_step+1}/{self.route_max}: {next_dir}")
             self.route_step += 1
+            self.last_turn_time = time.time()
             return True
         return False
 
-
-    def spin_until_center(self, direction, scale=1.0, timeout=2.5):
+    def spin_until_center(self, direction, scale=0.8, timeout=2.5):
         """
         Blijf draaien tot patroon [0,0,1,0,0] (midden) is gevonden,
         of tot 'timeout' seconden verstreken zijn (failsafe).
         """
-
         start = time.time()
         if direction == "left":
-            self.mc.stop()
             self.mc.draaien_tegen(scale)
         else:
-            self.mc.stop()
             self.mc.draaien(scale)
 
         while time.time() - start < timeout:
             pattern = self.read_sensors()
-            # print("spin:", pattern)  # desgewenst debuggen
             if pattern in ([0,0,1,0,0], [0,1,1,0,0], [0,0,1,1,0]):
                 self.mc.stop()
+                print(f"  Midden gevonden na {direction} draai")
                 return True
             time.sleep(0.01)
 
         self.mc.stop()
+        print(f"  Timeout na {direction} draai")
         return False
     
     def choose(self, direction):
+        """Voer de geplande route-actie uit."""
         if direction == "left":
-            self.spin_until_center(SHARP_TURN)
+            print("  Actie: Draai LINKS volgens route")
+            # Eerst even vooruit om kruispunt beter in te rijden
+            self.mc.forward(1.0)
+            time.sleep(0.15)
+            self.spin_until_center("left", SHARP_TURN)
         elif direction == "right":
-            self.spin_until_center(SHARP_TURN)
+            print("  Actie: Draai RECHTS volgens route")
+            # Eerst even vooruit om kruispunt beter in te rijden
+            self.mc.forward(1.0)
+            time.sleep(0.15)
+            self.spin_until_center("right", SHARP_TURN)
         else:
-            pass  # straight niets doen
-        
+            print("  Actie: Ga RECHTDOOR volgens route")
+            # Kort vooruit om kruispunt te passeren
+            self.mc.forward(1.0)
+            time.sleep(0.4)
 
     def follow_line(self):
+        """Volg de lijn en check eerst of we bij een kruispunt zijn."""
+        
+        # BELANGRIJKSTE FIX: Check eerst of we bij een kruispunt zijn
+        if self.handle_crossings():
+            # Na kruispunt even doorgaan voordat we weer normale lijnvolg-logica doen
+            time.sleep(0.2)
+            return
+        
         L1, L2, M, R2, R1 = self.read_sensors()
         pattern = [L1, L2, M, R2, R1]
-        print(f"Sens: {pattern}")
 
         # Straight
         if pattern in ([0,0,1,0,0], [0,1,1,1,0], [0,0,1,1,0], [0,1,1,0,0], [0,1,0,1,0]):
-            print("Rechtdoor")
             self.mc.forward(1.0)
-            # self.last_direction = "straight"
-            
-
-        # Linker T-splitsing: blijf draaien tot midden gevonden
-        elif pattern in ([1,1,1,0,0], [1,1,1,1,1]):
-            print("Linker T-splitsing → draai left tot midden")
-            ok = self.spin_until_center(direction="left", scale=0.8, timeout=1.5)
-            if ok:
-                self.mc.forward(1.0)
-            # self.last_direction = "left"
-
-        # Rechter T-splitsing: blijf draaien tot midden gevonden
-        elif pattern == [0,0,1,1,1]:
-            print("Rechter T-splitsing → draai rechts tot midden")
-            ok = self.spin_until_center(direction="right", scale=0.8, timeout=1.5)
-            if ok:
-                self.mc.forward(1.0)
-            # self.last_direction = "right"
 
         # Correctie left
         elif pattern in ([0,1,0,0,0], [1,1,0,0,0], [1,0,0,0,0], [1,1,0,0,0]):
@@ -238,15 +244,14 @@ class LineFollower:
             self.mc.set_scaled(1.0, SMOOTH_TURN)
             # self.last_direction = "right"
 
-        # Onbekend patroon -> laat zoals je had (gewoon niks doen/geen agressieve recovery)
+        # Lijn verloren - recovery
         else:
-            print("Lijn verloren!")
-            # Kort achteruit om van de witte zone af te komen
+            print("WAARSCHUWING: Lijn verloren - recovery actief")
             self.mc.backward(0.5)
             time.sleep(0.25)
-            ok = self.spin_until_center(direction="right", scale=1, timeout=1.5)
+            ok = self.spin_until_center(direction="right", scale=0.8, timeout=1.5)
             if not ok:
-                ok = self.spin_until_center(direction="left", scale=1, timeout=2.0)
+                ok = self.spin_until_center(direction="left", scale=0.8, timeout=1.5)
 
 
 # Instanties
@@ -271,8 +276,12 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 # Main Loop
+print("=" * 50)
 print("Start lijnvolgen... (Ctrl+C om te stoppen)")
-print(f"Route: {lijnvolger.route_key} met {lijnvolger.route_max} stappen")
+print(f"Route: {lijnvolger.route_key}")
+print(f"Plan: {' -> '.join(lijnvolger.route_plan)}")
+print(f"Totaal: {lijnvolger.route_max} stappen")
+print("=" * 50)
 time.sleep(2)
 
 try:
@@ -284,4 +293,4 @@ except KeyboardInterrupt:
 finally:
     motor_controller.stop()
     board.exit()
-    print("Programma gestopt.")
+    print("\nProgramma gestopt.")
