@@ -16,33 +16,33 @@ import sys
 ARDUINO_PORT = 'COM3'
 
 # Motor kalibratie (aangepast voor individuele motorverschillen)
-BASE_SPEED_LEFT = 0.23
-BASE_SPEED_RIGHT = 0.23
+BASE_SPEED_LEFT = 0.25
+BASE_SPEED_RIGHT = 0.25
 
 # Sensor drempelwaarde voor zwart/wit detectie
 SENSOR_THRESHOLD = 0.5
 
 # Timing constanten
-CROSS_COOLDOWN = 0.15  # AANGEPAST: Verkort voor betere kruispuntdetectie
+CROSS_COOLDOWN = 0.3  # Verkort voor betere kruispuntdetectie
 SPIN_TIMEOUT = 2.5    # Maximale tijd voor draai-operatie
-POST_TURN_DELAY = 0.2  # NEU: Vertraging na turn voor stabiele detectie
+POST_TURN_DELAY = 0.2  # Vertraging na turn voor stabiele detectie
 
 # Route definities
 ROUTES = {
     "depot-arcade": {
-        "plan": ["right", "left", "straight"],
+        "plan": ["right", "left", "stop"],
         "destination": "Arcade"
     },
     "depot-wildwaterbaan": {
-        "plan": ["right", "straight", "straight", "left", "left", "straight"],
+        "plan": ["right", "straight", "straight", "left", "left", "stop"],
         "destination": "Wildwaterbaan"
     }, 
     "depot-achtbaan": {
-        "plan": ["straight", "straight", "straight", "left", "straight"],
+        "plan": ["straight", "straight", "straight", "left", "stop"],
         "destination": "Achtbaan"
 }}
 
-ROUTE_SEQUENCE = ["depot-wildwaterbaan"]
+ROUTE_SEQUENCE = ["depot-achtbaan"]
 
 # =============================================================================
 # ARDUINO & SENSOR SETUP
@@ -157,7 +157,7 @@ class MotorController:
         """Draai linksom (rechter motor vooruit, linker achteruit)."""
         self.left['direction'].write(1)
         self.right['direction'].write(0)
-        self.set_raw_speeds(0.26, 0.26)
+        self.set_raw_speeds(0.3, 0.3)
     
     def stop(self):
         """Stop beide motoren."""
@@ -173,7 +173,7 @@ class LineFollower:
     
     def __init__(self, motor_controller, sensor_values, route_key):
         self.motor = motor_controller
-        self.sensors = sensor_values  # AANGEPAST: Terug naar waarden
+        self.sensors = sensor_values
         
         # Route informatie
         route = ROUTES[route_key]
@@ -184,7 +184,6 @@ class LineFollower:
     
     def read_sensors(self):
         """Converteer analoge sensorwaarden naar binair patroon (0=wit, 1=zwart)."""
-        # AANGEPAST: Terug naar callback-waarden
         pattern = [1 if v < SENSOR_THRESHOLD else 0 for v in self.sensors]
         print(f"Sensoren: {pattern}")
         return pattern
@@ -229,18 +228,26 @@ class LineFollower:
         print(f"  → Uitvoeren: {direction.upper()}")
         
         if direction in ["left", "right"]:
-            self.motor.forward(1.0)
-            time.sleep(0.2)
+            self.motor.forward()
+            time.sleep(0.15)
+            self.motor.stop()
+            time.sleep(0.4)
             self.spin_until_centered(direction)
+        elif direction == "stop":
+            self.motor.stop()
+            time.sleep(5)
+            print("  ■ Robot gestopt op bestemming.")
         else:  # straight
+            # Rij het kruispunt voorbij en stabiliseer
             self.motor.forward(1.0)
-            time.sleep(0.3)
-            # Zorg dat robot blijft rijden na straight
-            self.motor.forward(0.8)
+            time.sleep(0.35)
+            # Zet gelijk wat correctie in om gecentreerd te blijven
+            self.motor.forward(0.7)
     
     def handle_junction(self):
         """Detecteer kruispunt en voer route-instructie uit."""
         if self.route_step >= len(self.route_plan):
+            print("\n✅ ROUTE VOLTOOID!")
             return False
         
         if time.time() - self.last_turn_time < CROSS_COOLDOWN:
@@ -261,7 +268,7 @@ class LineFollower:
         return False
     
     def follow_line_correction(self):
-        """Pas rijrichting aan om lijn te volgen met agressieve correctie."""
+        """Pas rijrichting aan om lijn te volgen."""
         left_outer, left_inner, middle, right_inner, right_outer = self.read_sensors()
         
         # Perfect gecentreerd - volle snelheid vooruit
@@ -297,7 +304,7 @@ class LineFollower:
     def update(self):
         """Hoofdupdate cyclus: detecteer kruispunten of volg lijn."""
         if self.handle_junction():
-            time.sleep(POST_TURN_DELAY)  # NEU: Langere pauze na turn
+            time.sleep(POST_TURN_DELAY)
             return
         
         self.follow_line_correction()
@@ -334,7 +341,7 @@ def main():
     """Hoofdprogramma."""
     # Initialisatie
     board = setup_arduino()
-    sensor_values = setup_sensors(board)  # AANGEPAST: Terug naar waarden
+    sensor_values = setup_sensors(board)
     motor_config = setup_motors(board)
     
     motor_controller = MotorController(motor_config)

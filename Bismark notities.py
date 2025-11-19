@@ -3,286 +3,360 @@ import time
 import signal
 import sys
 
-# ===================== CONFIG =====================
-PORT = 'COM3'            # Pas aan indien nodig
-THRESHOLD = 0.45         # Zwart/wit-drempel (0..1) -> kalibreren!
-BASE_SPEED = 0.3
-SMOOTH_TURN = 0.4
-SHARP_TURN  = 0.8
+# Zodat je eigen check onderaan niet crasht
+name = "_main_"
 
-NO_LINE_TIMEOUT = 4.0    # s zonder lijn -> stoppen
-CROSS_COOLDOWN  = 0.8    # s na bocht geen nieuwe kruispuntbeslissing
-ROLL_AFTER_SEG   = 0.5   # s kort doorrollen na segment klaar
+# =============================================================================
+# CONFIGURATIE
+# =============================================================================
 
-INVERT_TURNS = False     # True als links/rechts fysiek gespiegeld is
+# Arduino verbinding
+ARDUINO_PORT = 'COM3'
 
-# ===================== ROUTEPLANNING =====================
-# Start bij Trein depot; pas aan als je baan anders loopt
+# Motor kalibratie (aangepast voor individuele motorverschillen)
+BASE_SPEED_LEFT = 0.25
+BASE_SPEED_RIGHT = 0.29
+
+# Sensor drempelwaarde voor zwart/wit detectie
+SENSOR_THRESHOLD = 0.5
+
+# Timing constanten
+CROSS_COOLDOWN = 0.3  # Seconden tussen kruispunt detecties
+SPIN_TIMEOUT = 2.5    # Maximale tijd voor draai-operatie
+
+# Route definities
 ROUTES = {
-    "depot-achtbaan":     {"plan": (["rechtdoor"], ["rechtdoor"], ["rechtdoor"], ["rechtdoor"], ["links"], ["rechtdoor"]),  "loc": "Trein depot"},
+    "depot-arcade": {
+        "plan": ["right", "left", "straight"],
+        "destination": "Arcade"
+    },
+    "depot-wildwaterbaan": {
+        "plan": ["right", "straight", "straight", "left", "left", "straight"],
+        "destination": "Wildwaterbaan"
+    },
 }
-ROUTE_VOLGORDE = [
-    "depot-achtbaan"
-]
 
-# ===================== ARDUINO =====================
-board = Arduino(PORT)
-it = util.Iterator(board)
-it.start()
-time.sleep(1.0)
+ROUTE_SEQUENCE = ["depot-wildwaterbaan"]
 
-def require_pin(pin, name):
+# =============================================================================
+# ARDUINO & SENSOR SETUP
+# =============================================================================
+
+def initialize_pin(pin, name):
+    """Controleer of een pin correct is geïnitialiseerd."""
     if pin is None:
         raise RuntimeError(f"Pin '{name}' kon niet worden geïnitialiseerd.")
     return pin
 
-# ---- SENSOREN (A1..A5) ----
-# sensor_values in volgorde: [R1, R2, M, L2, L1]
-sensor_values = [0.5, 0.5, 0.5, 0.5, 0.5]
 
-def maak_callback(index):
-    def callback(data):
-        sensor_values[index] = 0.5 if data is None else float(data)
-    return callback
+def setup_arduino():
+    """Initialiseer Arduino board en start de iterator."""
+    board = Arduino(ARDUINO_PORT)
+    iterator = util.Iterator(board)
+    iterator.start()
+    time.sleep(1)
+    return board
 
-raw_sensors = [
-    board.get_pin('a:1:i'),  # R1 (buiten rechts)
-    board.get_pin('a:2:i'),  # R2
-    board.get_pin('a:3:i'),  # M
-    board.get_pin('a:4:i'),  # L2
-    board.get_pin('a:5:i'),  # L1 (buiten links)
-]
-for i, s in enumerate(raw_sensors):
-    s = require_pin(s, f"sensor A{i+1}")
-    s.register_callback(maak_callback(i))
-    s.enable_reporting()
-time.sleep(1.0)
 
-def bin_pattern():
-    """Analoog -> binair (1=zwart, 0=wit); return (L1,L2,M,R2,R1)."""
-    R1 = 1 if sensor_values[0] < THRESHOLD else 0
-    R2 = 1 if sensor_values[1] < THRESHOLD else 0
-    M  = 1 if sensor_values[2] < THRESHOLD else 0
-    L2 = 1 if sensor_values[3] < THRESHOLD else 0
-    L1 = 1 if sensor_values[4] < THRESHOLD else 0
-    return (L1, L2, M, R2, R1)
+def setup_sensors(board):
+    """Configureer de 5 lijnsensoren met callbacks."""
+    sensor_values = [0.5] * 5  # Neutrale startwaarden
 
-def has_line():
-    return any(v < THRESHOLD for v in sensor_values)
+    def create_callback(index):
+        """Factory functie voor sensor callbacks."""
+        def callback(data):
+            sensor_values[index] = data if data is not None else 0.5
+        return callback
 
-# ---- MOTORPINNEN (jouw layout) ----
-motor_links     = require_pin(board.get_pin('d:11:p'), "motor_links PWM D11")
-richting_links  = require_pin(board.get_pin('d:13:o'), "richting_links D13")
-brake_links     = require_pin(board.get_pin('d:8:o'),  "brake_links D8")
+    # Initialiseer analoge sensoren A1 t/m A5
+    sensor_pins = [board.get_pin(f'a:{i}:i') for i in range(1, 6)]
 
-motor_rechts    = require_pin(board.get_pin('d:3:p'),  "motor_rechts PWM D3")
-richting_rechts = require_pin(board.get_pin('d:12:o'), "richting_rechts D12")
-brake_rechts    = require_pin(board.get_pin('d:9:o'),  "brake_rechts D9")
+    for i, pin in enumerate(sensor_pins):
+        pin = initialize_pin(pin, f"Sensor A{i+1}")
+        pin.register_callback(create_callback(i))
+        pin.enable_reporting()
 
-# (optioneel) Ultrasoon – pins alvast klaar, niet gebruikt hier
-echo_pin = require_pin(board.get_pin('d:6:o'), "ultrasonic trig D6")
-trig_pin = require_pin(board.get_pin('d:7:i'), "ultrasonic echo D7")
+    time.sleep(1)
+    return sensor_values
 
-# ===================== MOTORCONTROLLER =====================
-def clamp01(x): 
-    return max(0.0, min(1.0, float(x)))
+
+def setup_motors(board):
+    """Configureer motorpinnen voor beide motoren."""
+    motor_config = {
+        'left': {
+            'pwm': initialize_pin(board.get_pin('d:11:p'), "Motor Links PWM"),
+            'direction': initialize_pin(board.get_pin('d:13:o'), "Motor Links Richting"),
+            'brake': initialize_pin(board.get_pin('d:8:o'), "Motor Links Rem")
+        },
+        'right': {
+            'pwm': initialize_pin(board.get_pin('d:3:p'), "Motor Rechts PWM"),
+            'direction': initialize_pin(board.get_pin('d:12:o'), "Motor Rechts Richting"),
+            'brake': initialize_pin(board.get_pin('d:9:o'), "Motor Rechts Rem")
+        }
+    }
+    time.sleep(1)
+    return motor_config
+
+
+# =============================================================================
+# MOTOR CONTROLLER
+# =============================================================================
 
 class MotorController:
-    def __init__(self, motor_links, motor_rechts, richting_links, richting_rechts, brake_links, brake_rechts):
-        self.motor_links = motor_links
-        self.motor_rechts = motor_rechts
-        self.richting_links = richting_links
-        self.richting_rechts = richting_rechts
-        self.brake_links = brake_links
-        self.brake_rechts = brake_rechts
+    """Bestuurt beide motoren met individuele snelheidskalibratie."""
 
-        # standaard: vooruit, remmen uit
-        self.richting_links.write(0)
-        self.richting_rechts.write(0)
-        self.brake_links.write(0)
-        self.brake_rechts.write(0)
+    def init(self, motor_config, base_left=BASE_SPEED_LEFT, base_right=BASE_SPEED_RIGHT):
+        self.left = motor_config['left']
+        self.right = motor_config['right']
+        self.base_speed_left = float(base_left)
+        self.base_speed_right = float(base_right)
 
-    def set_speeds(self, left, right):
-        left = clamp01(left); right = clamp01(right)
-        self.richting_links.write(0)   # vooruit
-        self.richting_rechts.write(0)  # vooruit
-        self.motor_links.write(left)
-        self.motor_rechts.write(right)
+        # Initiële staat: vooruit, remmen uit
+        self._initialize_motors()
 
-    def forward(self, speed=BASE_SPEED):
-        self.set_speeds(speed, speed)
+    def _initialize_motors(self):
+        """Zet motoren in initiële staat."""
+        for motor in [self.left, self.right]:
+            motor['direction'].write(0)
+            motor['brake'].write(0)
 
-    def backward(self, speed=BASE_SPEED):
-        self.richting_links.write(1); self.richting_rechts.write(1)
-        self.motor_links.write(clamp01(speed))
-        self.motor_rechts.write(clamp01(speed))
+    def _set_raw_speeds(self, left, right):
+        """Zet absolute PWM waarden (0.0 - 1.0)."""
+        left = max(0.0, min(1.0, float(left)))
+        right = max(0.0, min(1.0, float(right)))
+        self.left['pwm'].write(left)
+        self.right['pwm'].write(right)
 
-    def draaien(self, speed=BASE_SPEED):        # rechtsom spin
-        self.richting_links.write(0); self.richting_rechts.write(1)
-        self.motor_links.write(clamp01(speed)); self.motor_rechts.write(clamp01(speed))
+    def set_speeds(self, left_scale, right_scale):
+        """Zet snelheden als factor van basis snelheid."""
+        self._set_raw_speeds(
+            self.base_speed_left * float(left_scale),
+            self.base_speed_right * float(right_scale)
+        )
 
-    def draaien_tegen(self, speed=BASE_SPEED):  # linksom spin
-        self.richting_links.write(1); self.richting_rechts.write(0)
-        self.motor_links.write(clamp01(speed)); self.motor_rechts.write(clamp01(speed))
+    def forward(self, scale=1.0):
+        """Rij vooruit met optionele snelheidsschaling."""
+        self.left['direction'].write(0)
+        self.right['direction'].write(0)
+        self.set_speeds(scale, scale)
+
+    def turn_right(self):
+        """Draai rechtsom (linker motor vooruit, rechter achteruit)."""
+        self.left['direction'].write(0)
+        self.right['direction'].write(1)
+        self._set_raw_speeds(0.3, 0.3)
+
+    def turn_left(self):
+        """Draai linksom (rechter motor vooruit, linker achteruit)."""
+        self.left['direction'].write(1)
+        self.right['direction'].write(0)
+        self._set_raw_speeds(0.3, 0.3)
 
     def stop(self):
-        self.motor_links.write(0)
-        self.motor_rechts.write(0)
+        """Stop beide motoren."""
+        self._set_raw_speeds(0, 0)
 
-# ===================== LIJNVOLGER + ROUTE =====================
+
+# =============================================================================
+# LINE FOLLOWER LOGIC
+# =============================================================================
+
 class LineFollower:
-    def __init__(self, motor_ctrl):
-        self.mc = motor_ctrl
-        self.last_direction = "rechtdoor"
-        self.last_turn_time = 0.0
+    """Hoofdlogica voor lijnvolgen en route navigatie."""
 
-        # route state
-        self.route_index = 0
-        self.route_key = ROUTE_VOLGORDE[self.route_index]
-        self.route_plan = ROUTES[self.route_key]["plan"]
-        self.route_max  = len(self.route_plan)
+    def init(self, motor_controller, sensor_values, route_key):
+        self.motor = motor_controller
+        self.sensors = sensor_values
+
+        # Route informatie
+        route = ROUTES[route_key]
+        self.route_name = route_key
+        self.route_plan = route["plan"]
         self.route_step = 0
+        self.last_turn_time = 0
 
-        self.no_line_elapsed = 0.0
+    def _read_sensors(self):
+        """Converteer analoge sensorwaarden naar binair patroon (0=wit, 1=zwart)."""
+        pattern = [1 if v < SENSOR_THRESHOLD else 0 for v in self.sensors]
+        print(f"Sensoren: {pattern}")
+        return pattern
 
-    def choose(self, direction, base=BASE_SPEED):
-        dir_eff = direction
-        if INVERT_TURNS:
-            if dir_eff == "links": dir_eff = "rechts"
-            elif dir_eff == "rechts": dir_eff = "links"
+    def _is_at_junction(self, left_outer, left_inner, middle, right_inner, right_outer):
+        """Detecteer of robot bij een T-kruispunt of kruising is."""
+        is_left_junction = left_outer == 1 and (left_inner == 1 or middle == 1)
+        is_right_junction = right_outer == 1 and (right_inner == 1 or middle == 1)
+        is_full_cross = left_outer == 1 and right_outer == 1
 
-        if direction == "links":
-            print("links")
-            self.mc.set_speeds(base*(1-SHARP_TURN), base*(1+SHARP_TURN))
-        elif direction == "rechts":
-            print("rechts")
-            self.mc.set_speeds(base*(1+SHARP_TURN), base*(1-SHARP_TURN))
+        return is_left_junction or is_right_junction or is_full_cross
+
+    def _spin_until_centered(self, direction):
+        """Draai totdat de lijn gecentreerd is (patroon [0,0,1,0,0])."""
+        start_time = time.time()
+
+        # Start draaibeweging
+        self.motor.stop()
+        time.sleep(0.2)
+
+        if direction == "left":
+            self.motor.turn_left()
         else:
-            print("rechtdoor")
-            self.mc.forward(base)
+            self.motor.turn_right()
 
-        self.last_direction = direction
-        self.last_turn_time = time.time()
+        time.sleep(0.4)
 
-    def handle_crossings(self):
-        if self.route_step >= self.route_max:
+        # Zoek gecentreerde positie
+        while time.time() - start_time < SPIN_TIMEOUT:
+            if self._read_sensors() == [0, 0, 1, 0, 0]:
+                self.motor.stop()
+                print(f"  ✓ Lijn gecentreerd na {direction} draai")
+                return True
+            time.sleep(0.01)
+
+        self.motor.stop()
+        print(f"  ✗ Timeout bij {direction} draai")
+        return False
+
+    def _execute_turn(self, direction):
+        """Voer route-instructie uit op kruispunt."""
+        print(f"  → Uitvoeren: {direction.upper()}")
+
+        if direction in ["left", "right"]:
+            self.motor.forward(1.0)
+            time.sleep(0.15)
+            self._spin_until_centered(direction)
+        else:  # straight
+            self.motor.forward(1.0)
+            time.sleep(0.4)
+
+    def _handle_junction(self):
+        """Detecteer kruispunt en voer route-instructie uit."""
+        if self.route_step >= len(self.route_plan):
             return False
+
         if time.time() - self.last_turn_time < CROSS_COOLDOWN:
             return False
 
-        L1, L2, M, R2, R1 = bin_pattern()
-        cross_left  = bool(M and L1 and L2)
-        cross_right = bool(M and R1 and R2)
-        cross_all   = bool(L1 and L2 and M and R2 and R1)
+        sensors = self._read_sensors()
 
-        if cross_left or cross_right or cross_all:
-            next_dir = self.route_plan[self.route_step]  # 'links'/'rechts'/'rechtdoor'
-            self.choose(next_dir)
-            print(f"Route stap {self.route_step+1}/{self.route_max}: {next_dir}")
+        if self._is_at_junction(*sensors):
+            next_action = self.route_plan[self.route_step]
+            print(f"\n🔀 KRUISPUNT #{self.route_step + 1}/{len(self.route_plan)}")
+
+            self._execute_turn(next_action)
+
             self.route_step += 1
+            self.last_turn_time = time.time()
             return True
+
         return False
 
-    def steer_on_line(self):
-        L1, L2, M, R2, R1 = bin_pattern()
+    def _follow_line_correction(self):
+        """Pas rijrichting aan om lijn te volgen met agressieve correctie."""
+        left_outer, left_inner, middle, right_inner, right_outer = self._read_sensors()
 
-        if L1 and not (L2 or M or R2 or R1):
-            print("links")
-            self.mc.set_speeds(0, BASE_SPEED); return
+        # Perfect gecentreerd - volle snelheid vooruit
+        if middle and not left_inner and not right_inner and not left_outer and not right_outer:
+            self.motor.forward(1.0)
 
-        if L2 and not (M or R2 or R1):
-            print("links")
-            self.mc.set_speeds(BASE_SPEED*0.40, BASE_SPEED); return
+        # Lichte afwijking links (alleen inner sensor)
+        elif left_inner and not left_outer and not right_outer:
+            self.motor.set_speeds(0.3, 1.0)  # Scherpe correctie
 
-        if R1 and not (R2 or M or L2 or L1):
-            print("rechts")
-            self.mc.set_speeds(BASE_SPEED, 0); return
+        # Lichte afwijking rechts (alleen inner sensor)
+        elif right_inner and not right_outer and not left_outer:
+            self.motor.set_speeds(1.0, 0.3)  # Scherpe correctie
 
-        if R2 and not (M or L2 or L1):
-            print("rechts")
-            self.mc.set_speeds(BASE_SPEED, BASE_SPEED*0.40); return
+        # Sterke afwijking links (outer sensor actief)
+        elif left_outer and not right_outer:
+            self.motor.set_speeds(0.0, 1.0)  # Zeer scherp: stop links, draai hard rechts
 
-        if M:
-            print("rechtdoor")
-            self.mc.forward(BASE_SPEED); return
+        # Sterke afwijking rechts (outer sensor actief)
+        elif right_outer and not left_outer:
+            self.motor.set_speeds(1.0, 0.0)  # Zeer scherp: stop rechts, draai hard links
 
-        print("lijn kwijt")
-        self.mc.forward(BASE_SPEED * 0.4)
+        # Meerdere sensoren tegelijk (complexe situatie, blijf op koers)
+        elif middle:
+            self.motor.forward(0.8)
 
-    def segment_done(self):
-        return self.route_step >= self.route_max and not has_line()
+        # Lijn volledig kwijt - noodsituatie
+        elif not any([left_outer, left_inner, middle, right_inner, right_outer]):
+            self.motor.stop()
+            time.sleep(0.05)
+            # Probeer snel te recoveren door te draaien
+            if not self._spin_until_centered("right"):
+                self._spin_until_centered("left")
 
-    def load_next_route(self):
-        self.route_index += 1
-        if self.route_index >= len(ROUTE_VOLGORDE):
-            return False
-        self.route_key  = ROUTE_VOLGORDE[self.route_index]
-        self.route_plan = ROUTES[self.route_key]["plan"]
-        self.route_max  = len(self.route_plan)
-        self.route_step = 0
-        return True
-
-    def loop(self):
-        time.sleep(0.1)
-
-        if has_line():
-            self.no_line_elapsed = 0.0
-            if not self.handle_crossings():
-                self.steer_on_line()
+        # Fallback: als geen patroon herkend, rij voorzichtig door
         else:
-            self.no_line_elapsed += 0.1
-            if self.no_line_elapsed >= NO_LINE_TIMEOUT:
-                print("lijn kwijt")
-                self.mc.stop()
+            self.motor.forward(0.5)
 
-        if self.segment_done():
-            # kleine uitrol
-            self.mc.forward(BASE_SPEED)
-            time.sleep(ROLL_AFTER_SEG)
-            self.mc.stop()
+    def update(self):
+        """Hoofdupdate cyclus: detecteer kruispunten of volg lijn."""
+        if self._handle_junction():
+            time.sleep(0.2)
+            return
 
-            # volgende route of klaar
-            if not self.load_next_route():
-                return False
+        self._follow_line_correction()
 
-            # draai tot lijn weer gevonden is
-            self.mc.draaien(BASE_SPEED)
-            while not has_line():
-                time.sleep(0.1)
-            self.mc.stop()
-            time.sleep(0.3)
 
-        return True
+# =============================================================================
+# MAIN PROGRAM
+# =============================================================================
 
-# ===================== INSTANTIES =====================
-motor_controller = MotorController(
-    motor_links, motor_rechts,
-    richting_links, richting_rechts,
-    brake_links, brake_rechts
-)
-lijnvolger = LineFollower(motor_controller)
-
-# ===================== NETTE EXIT =====================
-def signal_handler(sig, frame):
-    try:
+def setup_graceful_exit(motor_controller, board):
+    """Configureer netjes afsluiten bij Ctrl+C."""
+    def signal_handler(sig, frame):
+        print("\n\n⏹ Stoppen...")
         motor_controller.stop()
-    finally:
         board.exit()
-    sys.exit(0)
+        sys.exit(0)
 
-signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
-# ===================== MAIN =====================
-print("Start lijnvolgen... (Ctrl+C om te stoppen)")
-time.sleep(1.0)
 
-try:
-    while True:
-        if not lijnvolger.loop():
-            break
-except KeyboardInterrupt:
-    pass
-finally:
-    motor_controller.stop()
-    board.exit()
-    print("Programma gestopt.")
+def print_route_info(follower):
+    """Toon route informatie bij opstarten."""
+    print("=" * 60)
+    print("🤖 LINE FOLLOWER ROBOT - START")
+    print("=" * 60)
+    print(f"Route: {follower.route_name}")
+    print(f"Plan: {' → '.join(follower.route_plan)}")
+    print(f"Totaal stappen: {len(follower.route_plan)}")
+    print("=" * 60)
+    print("Druk Ctrl+C om te stoppen\n")
+
+
+def main():
+    """Hoofdprogramma."""
+    # Initialisatie
+    board = setup_arduino()
+    sensor_values = setup_sensors(board)
+    motor_config = setup_motors(board)
+
+    # Gebruik jouw init handmatig i.p.v. _init_
+    motor_controller = MotorController._new_(MotorController)
+    motor_controller.init(motor_config)
+
+    line_follower = LineFollower._new_(LineFollower)
+    line_follower.init(motor_controller, sensor_values, ROUTE_SEQUENCE[0])
+
+    setup_graceful_exit(motor_controller, board)
+    print_route_info(line_follower)
+
+    time.sleep(2)
+
+    # Main loop
+    try:
+        while True:
+            line_follower.update()
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        motor_controller.stop()
+        board.exit()
+        print("\n✓ Programma gestopt.")
+
+
+if name == "main":
+    main()

@@ -7,8 +7,8 @@ import sys
 PORT = 'COM3'          # Pas aan indien nodig
 
 # Aparte basis-snelheden per motor
-BASE_SPEED_LEFT = 0.23     # linker motor basis
-BASE_SPEED_RIGHT = 0.28   # rechter motor basis
+BASE_SPEED_LEFT = 0.21     # linker motor basis
+BASE_SPEED_RIGHT = 0.24   # rechter motor basis
 
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.6
@@ -174,7 +174,7 @@ class LineFollower:
             return True
         return False
 
-    def spin_until_center(self, direction, scale=0.8, timeout=2.5):
+    def spin_until_center(self, direction, timeout=2.5):
         """
         Blijf draaien tot patroon [0,0,1,0,0] (midden) is gevonden,
         of tot 'timeout' seconden verstreken zijn (failsafe).
@@ -224,39 +224,27 @@ class LineFollower:
             time.sleep(0.4)
 
     def follow_line(self):
-        """Volg de lijn en check eerst of we bij een kruispunt zijn."""
-        
-        # Check eerst of we bij een kruispunt zijn
         if self.handle_crossings():
-            # Na kruispunt even doorgaan voordat we weer normale lijnvolg-logica doen
             time.sleep(0.2)
             return
         
         L1, L2, M, R2, R1 = self.read_sensors()
-        pattern = [L1, L2, M, R2, R1]
-
-        # Straight
-        if pattern in ([0,0,1,0,0], [0,1,1,1,0], [0,0,1,1,0], [0,1,1,0,0], [0,1,0,1,0]):
+        
+        # Perfect gecentreerd
+        if M and not L1 and not R1:
             self.mc.forward(1.0)
-
-        # Correctie left
-        elif pattern in ([0,1,0,0,0], [1,1,0,0,0], [1,0,0,0,0], [1,1,0,0,0]):
-            print("Correctie naar left")
-            self.mc.set_scaled(SMOOTH_TURN, 1.0)
-        
-        
-        # Correctie rechts
-        elif pattern in ([0,0,0,1,0], [0,0,1,1,0], [0,0,0,0,1], [0,0,0,1,1]):
-            print("Correctie naar rechts")
-            self.mc.set_scaled(1.0, SMOOTH_TURN)
-        
-        # Lijn verloren - recovery
-        else:
-            print("WAARSCHUWING: Lijn verloren - recovery actief")
-            self.mc.backward(0.5)
-            ok = self.spin_until_center(direction="right", scale=0.8, timeout=1.5)
-            if not ok:
-                ok = self.spin_until_center(direction="left", scale=0.8, timeout=1.5)
+        # Lichte correctie links
+        elif L2 or (L1 and not R1):
+            self.mc.set_scaled(0.5, 1.0)
+        # Lichte correctie rechts
+        elif R2 or (R1 and not L1):
+            self.mc.set_scaled(1.0, 0.5)
+        # Lijn volledig verloren
+        elif not any([L1, L2, M, R2, R1]):
+            self.mc.stop()
+            time.sleep(0.1)
+            if not self.spin_until_center("right"):
+                self.spin_until_center("left")
 
 
 # Instanties

@@ -115,7 +115,7 @@ class MotorController:
         """Rechtsom draaien door left trager, rechts sneller."""
         self.richting_links.write(0)
         self.richting_rechts.write(0)
-        self.motor_links.write(0.4)
+        self.motor_links.write(0.2)
         self.motor_rechts.write(0)
 
     def draaien_tegen(self, scale=0.8):
@@ -123,7 +123,7 @@ class MotorController:
         self.richting_links.write(0)
         self.richting_rechts.write(0)
         self.motor_links.write(0)
-        self.motor_rechts.write(0.4)
+        self.motor_rechts.write(0.2)
 
     def stop(self):
         self.set_speeds(0, 0)
@@ -211,7 +211,7 @@ class LineFollower:
             
 
         # Linker T-splitsing: blijf draaien tot midden gevonden
-        elif pattern in ([1,1,1,0,0], [1,1,1,1,1]):
+        elif pattern in [1,1,1,0,0]:
             print("Linker T-splitsing → draai left tot midden")
             ok = self.spin_until_center(direction="left", scale=0.8, timeout=1.5)
             if ok:

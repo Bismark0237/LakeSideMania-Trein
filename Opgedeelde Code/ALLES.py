@@ -7,19 +7,18 @@ import sys
 PORT = 'COM3'          # Pas aan indien nodig
 
 # Aparte basis-snelheden per motor
-BASE_SPEED_LEFT = 0.23     # linker motor basis
-BASE_SPEED_RIGHT = 0.28   # rechter motor basis
+BASE_SPEED_LEFT = 0.21     # linker motor basis
+BASE_SPEED_RIGHT = 0.25   # rechter motor basis
 
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.6
 THRESHOLD = 0.5        # drempel voor zwart/wit
 CROSS_COOLDOWN = 0.5   # s na bocht geen nieuwe kruispuntbeslissing (verlaagd voor snellere detectie)
 ROUTES = {
-    "depot-arcade": {"plan": ["right", "left", "straight"], "loc": "Arcade"},
-    "depot-wildwaterbaan": {"plan": ["right", "straight", "straight", "left", "left", "straight"], "loc": "Wildwaterbaan"},
+    "depot-achtbaan": {"plan": ["straight", "straight", "straight", "straight", "left", "straight"], "loc": "Trein depot"},
 }
 ROUTE_VOLGORDE = [
-    "depot-wildwaterbaan",
+    "depot-achtbaan"
 ]
 
 # Pin checker
@@ -112,19 +111,19 @@ class MotorController:
         self.richting_rechts.write(1)
         self.set_scaled(scale, scale)
 
-    def draaien(self):
+    def draaien(self, scale=0.8):
         """Rechtsom draaien door links trager, rechts sneller."""
         self.richting_links.write(0)
-        self.richting_rechts.write(1)
-        self.motor_links.write(0.25)
-        self.motor_rechts.write(0.27)
-
-    def draaien_tegen(self):
-        """Linksom draaien door links sneller, rechts trager."""
-        self.richting_links.write(1)
         self.richting_rechts.write(0)
-        self.motor_links.write(0.25)
-        self.motor_rechts.write(0.29)
+        self.motor_links.write(0.2)
+        self.motor_rechts.write(0)
+
+    def draaien_tegen(self, scale=0.8):
+        """Linksom draaien door links sneller, rechts trager."""
+        self.richting_links.write(0)
+        self.richting_rechts.write(0)
+        self.motor_links.write(0)
+        self.motor_rechts.write(0.2)
 
     def stop(self):
         self.set_speeds(0, 0)
@@ -181,19 +180,13 @@ class LineFollower:
         """
         start = time.time()
         if direction == "left":
-            self.mc.stop()
-            time.sleep(0.2)
-            self.mc.draaien_tegen()
-            time.sleep(0.4)
+            self.mc.draaien_tegen(scale)
         else:
-            self.mc.stop()
-            time.sleep(0.2)
-            self.mc.draaien()
-            time.sleep(0.4)
+            self.mc.draaien(scale)
 
         while time.time() - start < timeout:
             pattern = self.read_sensors()
-            if pattern == ([0,0,1,0,0]):
+            if pattern in ([0,0,1,0,0], [0,1,1,0,0], [0,0,1,1,0]):
                 self.mc.stop()
                 print(f"  Midden gevonden na {direction} draai")
                 return True
@@ -210,13 +203,13 @@ class LineFollower:
             # Eerst even vooruit om kruispunt beter in te rijden
             self.mc.forward(1.0)
             time.sleep(0.15)
-            self.spin_until_center("left")
+            self.spin_until_center("left", SHARP_TURN)
         elif direction == "right":
             print("  Actie: Draai RECHTS volgens route")
             # Eerst even vooruit om kruispunt beter in te rijden
             self.mc.forward(1.0)
             time.sleep(0.15)
-            self.spin_until_center("right")
+            self.spin_until_center("right", SHARP_TURN)
         else:
             print("  Actie: Ga RECHTDOOR volgens route")
             # Kort vooruit om kruispunt te passeren
