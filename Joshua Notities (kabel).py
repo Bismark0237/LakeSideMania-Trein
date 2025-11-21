@@ -16,14 +16,14 @@ import sys
 ARDUINO_PORT = 'COM3'
 
 # Motor kalibratie (aangepast voor individuele motorverschillen)
-BASE_SPEED_LEFT = 0.27
-BASE_SPEED_RIGHT = 0.27
+BASE_SPEED_LEFT = 0.2
+BASE_SPEED_RIGHT = 0.2
 
 # Sensor drempelwaarde voor zwart/wit detectie
 SENSOR_THRESHOLD = 0.5
 
 # Timing constanten
-CROSS_COOLDOWN = 1  # Verkort voor betere kruispuntdetectie
+CROSS_COOLDOWN = 0.5  # Verkort voor betere kruispuntdetectie
 SPIN_TIMEOUT = 2.5    # Maximale tijd voor draai-operatie
 POST_TURN_DELAY = 0.5  # Vertraging na turn voor stabiele detectie
 
@@ -42,7 +42,7 @@ ROUTES = {
         "destination": "Achtbaan"
 }}
 
-ROUTE_SEQUENCE = ["depot-wildwaterbaan"]
+ROUTE_SEQUENCE = ["depot-achtbaan"]
 
 # =============================================================================
 # ARDUINO & SENSOR SETUP
@@ -151,13 +151,13 @@ class MotorController:
         """Draai rechtsom (linker motor vooruit, rechter achteruit)."""
         self.left['direction'].write(0)
         self.right['direction'].write(1)
-        self.set_raw_speeds(0.28, 0.28)
+        self.set_raw_speeds(0.22, 0.22)
     
     def turn_left(self):
         """Draai linksom (rechter motor vooruit, linker achteruit)."""
         self.left['direction'].write(1)
         self.right['direction'].write(0)
-        self.set_raw_speeds(0.3, 0.31)
+        self.set_raw_speeds(0.25, 0.25)
     
     def stop(self):
         """Stop beide motoren."""
@@ -279,19 +279,19 @@ class LineFollower:
         
         # Lichte afwijking links (inner sensor)
         elif left_inner and not left_outer:
-            self.motor.set_speeds(0.3, 0.9)
+            self.motor.set_speeds(0.2, 0.8)
         
         # Lichte afwijking rechts (inner sensor)
         elif right_inner and not right_outer:
-            self.motor.set_speeds(0.9, 0.3)
+            self.motor.set_speeds(0.8, 0.2)
         
         # Sterke afwijking links (outer sensor actief)
         elif left_outer:
-            self.motor.set_speeds(0.1, 1.0)
+            self.motor.set_speeds(0.1, 0.9)
         
         # Sterke afwijking rechts (outer sensor actief)
         elif right_outer:
-            self.motor.set_speeds(1.0, 0.1)
+            self.motor.set_speeds(0.9, 0.1)
         
         # Middle sensor alleen (kan gebeuren bij bochten)
         elif middle:
