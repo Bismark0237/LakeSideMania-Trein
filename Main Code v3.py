@@ -4,8 +4,8 @@ import signal
 import sys
 
 # Configuratie
-PORT = 'COM3'          # Pas aan indien nodig
-BASE_SPEED = 0.21
+PORT = 'COM4'          # Pas aan indien nodig
+BASE_SPEED = 0.3
 SHARP_TURN = 0.8
 SMOOTH_TURN = 0.5
 THRESHOLD = 0.5        # drempel voor zwart/wit
@@ -91,7 +91,7 @@ class MotorController:
         self.motor_links.write(speed)
         self.motor_rechts.write(speed)
     
-    def draaien(self, speed=BASE_SPEED * 0.8): # draait naar rechts
+    def draaien(self, speed=BASE_SPEED): # draait naar rechts
         self.richting_links.write(0)
         self.richting_rechts.write(1)
         self.motor_links.write(speed)
