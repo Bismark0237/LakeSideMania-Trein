@@ -5,6 +5,7 @@ Projectleden
 - Sufiyan Mistry
 - Lars brukman
 - Dimitri van der Laan
+- Preston Stroop
 
 Doel van het project  
 Het doel van dit project is het ontwikkelen van een onderhoudssysteem voor attractiepark **Lake Side Mania**.  
